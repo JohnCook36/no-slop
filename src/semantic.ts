@@ -6,7 +6,7 @@ import { stronglyConnected, witness } from "./graph.js";
 type EdgeKind = "runtime-import" | "type-import" | "runtime-export" | "type-export" | "dynamic-import" | "require";
 type Span = { file: string; line: number; column: number };
 type Link = { from: string; to: string; kind: EdgeKind; at: Span };
-type SymbolInfo = { id: string; file: string; name: string; kind: string; at: Span };
+type SymbolInfo = { id: string; file: string; name: string; kind: string; at: Span; classOwner?: string; operation?: boolean; mutableField?: boolean; domainClass?: boolean; forwardsTo?: string };
 type Reference = { from: string; to: string; kind: "call" | "construct" | "write" | "read" | "type"; at: Span };
 type Gap = { code: string; at: Span };
 type Obj = Record<string, unknown>;
@@ -180,16 +180,59 @@ export async function analyze(path: string, limits: Limits = defaults) {
     const declarations=s.declarations??[];
     return declarations.map(d=>byDeclaration.get(d)).find((id):id is string=>id!==undefined);
   };
+  const infoById=new Map(symbols.map(s=>[s.id,s]));
+  const modifiers=(n:ts.Node)=>ts.canHaveModifiers(n)?ts.getModifiers(n)??[]:[];
+  const has=(n:ts.Node,k:ts.SyntaxKind)=>modifiers(n).some(m=>m.kind===k);
+  for(const [node,id] of byDeclaration){
+    const info=infoById.get(id)!;
+    for(let p:ts.Node|undefined=node.parent;p;p=p.parent){
+      if(ts.isClassDeclaration(p)){info.classOwner=byDeclaration.get(p);break;}
+    }
+    if(ts.isFunctionDeclaration(node)||ts.isMethodDeclaration(node)){
+      info.operation=!!node.body;
+    } else if(ts.isVariableDeclaration(node)){
+      info.operation=!!node.initializer&&(ts.isArrowFunction(node.initializer)||ts.isFunctionExpression(node.initializer));
+    }
+    if(ts.isPropertyDeclaration(node)&&ts.isClassDeclaration(node.parent)){
+      info.mutableField=!has(node,ts.SyntaxKind.ReadonlyKeyword)&&!has(node,ts.SyntaxKind.StaticKeyword)&&
+        !has(node,ts.SyntaxKind.PrivateKeyword)&&!has(node,ts.SyntaxKind.ProtectedKeyword);
+    }
+    if(ts.isClassDeclaration(node)){
+      const state=node.members.some(m=>ts.isPropertyDeclaration(m)&&!has(m,ts.SyntaxKind.StaticKeyword)&&
+        (has(m,ts.SyntaxKind.PrivateKeyword)||has(m,ts.SyntaxKind.ProtectedKeyword)||ts.isPrivateIdentifier(m.name)));
+      const behavior=node.members.some(m=>ts.isMethodDeclaration(m)&&!!m.body&&m.body.statements.length>0&&!has(m,ts.SyntaxKind.StaticKeyword));
+      info.domainClass=state&&behavior;
+    }
+    // Deliberately narrow forwarding candidate: free, synchronous, single direct return call
+    // with all original parameters in order, no defaults/rest/generics or extra work.
+    if(!ts.isFunctionDeclaration(node)||!node.body||!ts.isSourceFile(node.parent)||node.asteriskToken||
+       node.typeParameters?.length||has(node,ts.SyntaxKind.AsyncKeyword)||node.body.statements.length!==1)continue;
+    const stmt=node.body.statements[0]!;
+    if(!ts.isReturnStatement(stmt)||!stmt.expression||!ts.isCallExpression(stmt.expression))continue;
+    const call=stmt.expression;
+    if(!ts.isIdentifier(call.expression)||call.questionDotToken||call.typeArguments?.length||
+       call.arguments.length!==node.parameters.length)continue;
+    if(!node.parameters.every((p,i)=>ts.isIdentifier(p.name)&&!p.initializer&&!p.dotDotDotToken&&
+      !!call.arguments[i]&&ts.isIdentifier(call.arguments[i]!)&&
+      checker.getSymbolAtLocation(p.name)===checker.getSymbolAtLocation(call.arguments[i]!)))continue;
+    const target=symbolId(call.expression);
+    if(target&&target!==id&&infoById.get(target)?.kind==="FunctionDeclaration"&&!infoById.get(target)?.classOwner)
+      info.forwardsTo=target;
+  }
+  const isUpdate=(p:ts.Node,expr:ts.Node)=>(ts.isPrefixUnaryExpression(p)||ts.isPostfixUnaryExpression(p))&&
+    p.operand===expr&&(p.operator===ts.SyntaxKind.PlusPlusToken||p.operator===ts.SyntaxKind.MinusMinusToken);
   const kindOf=(n:ts.Identifier):Reference["kind"]=>{
     const p=n.parent;
     if(ts.isPropertyAccessExpression(p)&&p.name===n){
       const outer=p.parent;if(ts.isCallExpression(outer)&&outer.expression===p)return "call";
+      if(isUpdate(outer,p))return "write";
       if(ts.isBinaryExpression(outer)&&outer.left===p&&outer.operatorToken.kind>=ts.SyntaxKind.FirstAssignment&&outer.operatorToken.kind<=ts.SyntaxKind.LastAssignment)return "write";
     }
+    if(isUpdate(p,n))return "write";
     if(ts.isCallExpression(p)&&p.expression===n)return "call";
     if(ts.isNewExpression(p)&&p.expression===n)return "construct";
     if(ts.isBinaryExpression(p)&&p.left===n&&p.operatorToken.kind>=ts.SyntaxKind.FirstAssignment&&p.operatorToken.kind<=ts.SyntaxKind.LastAssignment)return "write";
-    if(ts.isTypeNode(p))return "type";
+    if(ts.isTypeNode(p)||(ts.isQualifiedName(p)&&ts.isTypeNode(p.parent)))return "type";
     return "read";
   };
   for(const sf of sources) {

@@ -1,15 +1,27 @@
 #!/usr/bin/env node
 import { scan } from "./scanner.js";
 import { analyze } from "./semantic.js";
-const help = "Usage: no-slop scan|analyze <path> [--format text|json]\n" +
-  "scan: inventory; analyze: experimental partial semantic graph (NS-002). No security verdict.\n" +
+import { architecture } from "./architecture.js";
+const help = "Usage: no-slop scan|analyze|check <path> [--format text|json]\n" +
+  "scan: inventory; analyze: semantic graph; check: advisory architecture diagnostics. Partial coverage, no security verdict.\n" +
   "Exit codes: 0 complete inventory, 1 reserved for policy failure, 2 incomplete/error.";
 async function main(args: string[]): Promise<number> {
   if (args.length === 1 && ["--help", "-h"].includes(args[0]!)) { console.log(help); return 0; }
   if (args.length === 1 && ["--version", "-v"].includes(args[0]!)) { console.log("0.1.0"); return 0; }
-  if (!["scan","analyze"].includes(args[0] ?? "") || !args[1] || args[1].startsWith("-") ||
+  if (!["scan","analyze","check"].includes(args[0] ?? "") || !args[1] || args[1].startsWith("-") ||
       !(args.length === 2 || (args.length === 4 && args[2] === "--format" &&
         ["text", "json"].includes(args[3]!)))) { console.error(help); return 2; }
+  if(args[0] === "check"){
+    const result=architecture(await analyze(args[1]));
+    if(args[3]==="json") console.log(JSON.stringify(result,null,2));
+    else {
+      console.log("No Slop architecture: advisory / partial coverage");
+      for(const finding of result.findings) console.log(JSON.stringify(finding));
+      console.log("Findings: "+result.findings.length+"; coverage gaps: "+result.coverage.gaps);
+      for(const limit of result.limitations) console.log(limit);
+    }
+    return 2;
+  }
   if(args[0] === "analyze"){
     const result=await analyze(args[1]);
     if(args[3]==="json") console.log(JSON.stringify(result,null,2));
