@@ -12,10 +12,12 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test test/scan.test.mjs"
+    "test": "npm run build && node --test test/*.test.mjs"
   },
   "devDependencies": {
-    "@types/node": "22.15.33",
+    "@types/node": "22.15.33"
+  },
+  "dependencies": {
     "typescript": "5.8.3"
   }
 }

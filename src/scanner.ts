@@ -36,7 +36,7 @@ const failure = (error: unknown) => {
   const code = (error as NodeJS.ErrnoException | null)?.code;
   return typeof code === "string" && /^[A-Z0-9_]+$/.test(code) ? code : "READ_FAILED";
 };
-export async function scan(rootInput: string, limits: Limits = defaults): Promise<ScanReport> {
+export async function scan(rootInput: string, limits: Limits = defaults, capture?: (path: string, text: string, kind: "source" | "config") => void): Promise<ScanReport> {
   for (const key of Object.keys(defaults) as (keyof Limits)[]) {
     if (!Number.isSafeInteger(limits[key]) || limits[key] <= 0) throw new Error("INVALID_LIMIT");
   }
@@ -90,7 +90,8 @@ export async function scan(rootInput: string, limits: Limits = defaults): Promis
           if (before.isSymbolicLink()) { report.coverage.excluded++; continue; }
           if (await realpath(path) !== path) { note(rel, "UNSAFE_PATH"); continue; }
           if (before.isDirectory()) { pending.push({ dir: path, depth: depth + 1 }); continue; }
-          if (!before.isFile() || !source.test(name)) { report.coverage.excluded++; continue; }
+          const isConfig = !!capture && /^(?:package\.json|tsconfig(?:\.[\w-]+)?\.json)$/i.test(name);
+          if (!before.isFile() || (!source.test(name) && !isConfig)) { report.coverage.excluded++; continue; }
           if (before.size > limits.maxFileBytes) { note(rel, "FILE_LIMIT"); continue; }
           if (report.coverage.bytes + before.size > limits.maxTotalBytes) {
             note(rel, "TOTAL_BYTES_LIMIT"); stopped = true; break;
@@ -118,6 +119,8 @@ export async function scan(rootInput: string, limits: Limits = defaults): Promis
             let text: string;
             try { text = new TextDecoder("utf-8", { fatal: true }).decode(data.subarray(0, count)); }
             catch { note(rel, "INVALID_UTF8"); continue; }
+            if (capture) capture(rel, text, isConfig ? "config" : "source");
+            if (isConfig) continue;
             const lines = text.length ? text.split(/\r\n|\r|\n/).length - (/\r$|\n$/.test(text) ? 1 : 0) : 0;
             report.files.push({ path: rel, bytes: count, lines });
             report.coverage.files++;
