@@ -1,0 +1,21 @@
+{
+  "name": "no-slop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "no-slop": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/scan.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.33",
+    "typescript": "5.8.3"
+  }
+}
